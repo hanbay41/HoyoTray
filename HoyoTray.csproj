@@ -12,7 +12,8 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <AssemblyName>HoyoTray</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>Assets\resin.ico</ApplicationIcon>
     <RootNamespace>HoyoTray</RootNamespace>
     <!-- WebView2 package drags in a harmless WPF reference conflict; also skip its XML docs -->

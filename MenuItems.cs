@@ -94,15 +94,18 @@ class StatItem(MenuStyle st) : ToolStripItem
         MenuStyle.Text(g, Account, st.Small, t.Dim, new Rectangle(pad, y + st.S(2), w, st.S(18)), TextFormatFlags.Right);
         y += st.S(24);
 
-        // Label left, "142 / 200" right
-        var maxText = $" / {Max}";
-        var maxSize = MenuStyle.Measure(maxText, st.Body);
-        var valSize = MenuStyle.Measure(Current.ToString(), st.Value);
+        // Label left, "142 / 200" right ("—" while there's no data yet)
+        bool hasData = Max > 0;
+        var maxText = hasData ? $" / {Max}" : "";
+        var valText = hasData ? Current.ToString() : "—";
+        var maxSize = hasData ? MenuStyle.Measure(maxText, st.Body) : Size.Empty;
+        var valSize = MenuStyle.Measure(valText, st.Value);
         int valH = st.S(26);
         MenuStyle.Text(g, Label, st.Body, t.Dim, new Rectangle(pad, y + st.S(7), w, st.S(18)));
-        MenuStyle.Text(g, maxText, st.Body, t.Dim, new Rectangle(pad + w - maxSize.Width, y + st.S(7), maxSize.Width, st.S(18)));
-        bool full = Current >= Max;
-        MenuStyle.Text(g, Current.ToString(), st.Value, full ? Accent : t.Text,
+        if (hasData)
+            MenuStyle.Text(g, maxText, st.Body, t.Dim, new Rectangle(pad + w - maxSize.Width, y + st.S(7), maxSize.Width, st.S(18)));
+        bool full = hasData && Current >= Max;
+        MenuStyle.Text(g, valText, st.Value, full ? Accent : hasData ? t.Text : t.Dim,
             new Rectangle(pad + w - maxSize.Width - valSize.Width, y, valSize.Width, valH));
         y += valH + st.S(4);
 

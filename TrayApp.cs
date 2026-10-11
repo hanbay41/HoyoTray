@@ -1,3 +1,4 @@
+using System.Net.NetworkInformation;
 using Microsoft.Win32;
 
 namespace HoyoTray;
@@ -5,25 +6,36 @@ namespace HoyoTray;
 class TrayApp : ApplicationContext
 {
     static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(20);
+    // After a failed refresh, try again sooner than the normal poll interval.
+    static readonly TimeSpan[] RetryDelays =
+        [TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5)];
 
     readonly NotifyIcon tray = new();
     readonly ContextMenuStrip menu = new();
     readonly System.Windows.Forms.Timer pollTimer = new();
+    readonly System.Windows.Forms.Timer retryTimer = new();
     readonly System.Windows.Forms.Timer tickTimer = new() { Interval = 30_000 };
     readonly MenuStyle style = new();
+    readonly SynchronizationContext ui;
     Icon okIcon, badIcon;
 
     Settings settings = Settings.Load();
     string? cookie = Storage.LoadCookie();
-    Dictionary<Game, List<GameAccount>>? accounts; // null until discovered for the current login
+    Dictionary<Game, List<GameAccount>>? accounts; // null until known (from cache or HoYoLAB)
+    bool accountsFresh;                             // discovered from HoYoLAB during this run
     readonly Dictionary<string, Note> notes = [];  // keyed by Settings.Key(game, account)
     readonly Dictionary<string, string> errors = [];
     string? globalError;
     DateTime? lastUpdated;
-    bool refreshing, loginOpen, settingsOpen;
+    bool refreshing, loginOpen, settingsOpen, needsRetry;
+    int retryCount;
 
     public TrayApp()
     {
+        ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        Log.Write($"Started v{Application.ProductVersion}");
+        if (cookie != null) LoadCache();
+
         (okIcon, badIcon) = Theme.TrayIcons(settings.Icon);
         MenuRenderer.Apply(menu, style);
         menu.HandleCreated += (_, _) => Theme.RoundCorners(menu.Handle);
@@ -46,21 +58,47 @@ class TrayApp : ApplicationContext
 
         pollTimer.Interval = (int)PollInterval.TotalMilliseconds;
         pollTimer.Tick += async (_, _) => await Refresh();
+        retryTimer.Tick += async (_, _) => { retryTimer.Stop(); await Refresh(); };
         tickTimer.Tick += (_, _) => UpdateTooltip();
         pollTimer.Start();
         tickTimer.Start();
 
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
 
+        UpdateTooltip();
         if (cookie == null) _ = Login();
         else _ = Refresh();
     }
+
+    void LoadCache()
+    {
+        var cache = Cache.Load();
+        if (cache.Accounts.Count > 0)
+            accounts = Game.All.ToDictionary(g => g, g => cache.Accounts.GetValueOrDefault(g.Key) ?? []);
+        foreach (var (key, note) in cache.Notes) notes[key] = note;
+        lastUpdated = cache.LastUpdated;
+        Log.Write($"Cache: {cache.Accounts.Values.Sum(l => l.Count)} accounts, {cache.Notes.Count} notes from {cache.LastUpdated:HH:mm}");
+    }
+
+    void SaveCache() => new Cache
+    {
+        Accounts = accounts?.ToDictionary(kv => kv.Key.Key, kv => kv.Value) ?? [],
+        Notes = new(notes),
+        LastUpdated = lastUpdated,
+    }.Save();
 
     async void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.Resume) return;
         await Task.Delay(TimeSpan.FromSeconds(15)); // give the network a moment
         await Refresh();
+    }
+
+    // Raised on a background thread; e.g. Wi-Fi connecting after Windows startup.
+    void OnNetworkChanged(object? sender, NetworkAvailabilityEventArgs e)
+    {
+        if (e.IsAvailable) ui.Post(async _ => { if (needsRetry) await Refresh(); }, null);
     }
 
     /// <summary>Enabled games and the accounts the user chose to show, in display order.</summary>
@@ -88,10 +126,14 @@ class TrayApp : ApplicationContext
             {
                 cookie = form.Cookie;
                 Storage.SaveCookie(cookie);
-                accounts = null; // re-detect accounts for this login
+                // Possibly a different HoYoLAB account: forget everything cached.
+                Cache.Delete();
+                accounts = null;
+                accountsFresh = false;
                 notes.Clear();
                 errors.Clear();
                 globalError = null;
+                lastUpdated = null;
                 await Refresh();
             }
         }
@@ -102,7 +144,7 @@ class TrayApp : ApplicationContext
     {
         if (settingsOpen) return;
         if (cookie == null) { await Login(); if (cookie == null) return; }
-        if (accounts == null) await Refresh();
+        if (!accountsFresh) await Refresh(); // make sure newly linked accounts are listed
         if (accounts == null)
         {
             MessageBox.Show("Couldn't load your game accounts from HoYoLAB.\n\n" + (globalError ?? "Try again in a moment."),
@@ -137,52 +179,75 @@ class TrayApp : ApplicationContext
         if (refreshing) return;
         if (cookie == null) { globalError = "Not logged in"; UpdateTooltip(); return; }
         refreshing = true;
+        UpdateTooltip();
+        bool transientFailure = false;
         try
         {
             globalError = null;
 
-            if (accounts == null)
+            if (!accountsFresh)
             {
-                var found = new Dictionary<Game, List<GameAccount>>();
-                foreach (var g in Game.All)
-                    found[g] = await HoyoApi.GetAccounts(cookie, g.Biz);
-                accounts = found;
-                Log.Write("Accounts: " + string.Join(", ", found.Select(kv => $"{kv.Key.Key}={kv.Value.Count}")));
+                // All games at once; on failure the cached account list (if any) stays in use.
+                var lists = await Task.WhenAll(Game.All.Select(g => HoyoApi.GetAccounts(cookie, g.Biz)));
+                accounts = Game.All.Zip(lists).ToDictionary(p => p.First, p => p.Second);
+                accountsFresh = true;
+                Log.Write("Accounts: " + string.Join(", ", accounts.Select(kv => $"{kv.Key.Key}={kv.Value.Count}")));
             }
 
-            foreach (var (g, a) in Shown())
+            var targets = Shown().Where(s => !onlyMissing || !notes.ContainsKey(Settings.Key(s.Game, s.Account))).ToList();
+            var results = await Task.WhenAll(targets.Select(async s =>
+            {
+                try { return (s.Game, s.Account, Note: await s.Game.Fetch(cookie, s.Account), Error: (Exception?)null); }
+                catch (Exception e) { return (s.Game, s.Account, Note: (Note?)null, Error: e); }
+            }));
+
+            foreach (var (g, a, note, error) in results)
             {
                 var key = Settings.Key(g, a);
-                if (onlyMissing && notes.ContainsKey(key)) continue;
-                try
+                if (note != null)
                 {
-                    var note = await g.Fetch(cookie, a);
                     notes[key] = note;
                     errors.Remove(key);
                     Log.Write($"{key} ok {note.Stamina.Current}/{note.Stamina.Max}, {note.Side}");
                 }
-                catch (HoyoException e) when (e.AuthExpired) { SetAuthExpired(); break; }
-                catch (Exception e)
+                else if (error is HoyoException { AuthExpired: true }) SetAuthExpired();
+                else
                 {
                     // Keep the previous note so the estimate keeps ticking.
-                    errors[key] = Describe(e);
-                    Log.Write($"{key} error: {LogText(e)}");
+                    errors[key] = Describe(error!);
+                    transientFailure |= IsTransient(error!);
+                    Log.Write($"{key} error: {LogText(error!)}");
                 }
             }
 
-            if (globalError == null) lastUpdated = DateTime.Now;
+            if (globalError == null && results.Any(r => r.Note != null)) lastUpdated = DateTime.Now;
+            SaveCache();
         }
         catch (HoyoException e) when (e.AuthExpired) { SetAuthExpired(); }
         catch (Exception e)
         {
             globalError = Describe(e);
+            transientFailure |= IsTransient(e);
             Log.Write($"Refresh error: {LogText(e)}");
         }
         finally
         {
             refreshing = false;
+            ScheduleRetry(transientFailure);
             UpdateTooltip();
         }
+    }
+
+    void ScheduleRetry(bool failed)
+    {
+        needsRetry = failed;
+        retryTimer.Stop();
+        if (!failed) { retryCount = 0; return; }
+        var delay = RetryDelays[Math.Min(retryCount, RetryDelays.Length - 1)];
+        retryCount++;
+        retryTimer.Interval = (int)delay.TotalMilliseconds;
+        retryTimer.Start();
+        Log.Write($"Retrying in {delay.TotalSeconds:0}s");
     }
 
     void SetAuthExpired()
@@ -196,12 +261,16 @@ class TrayApp : ApplicationContext
         }
     }
 
+    // Worth retrying soon: network trouble or rate limiting. Not: bad login, notes not public, etc.
+    static bool IsTransient(Exception e) =>
+        e is HttpRequestException or TaskCanceledException or HoyoException { Retcode: 1034 or 10035 or 5003 };
+
     static string Describe(Exception e) => e switch
     {
         HoyoException { NotPublic: true } => "Enable Real-Time Notes in HoYoLAB",
         HoyoException { Retcode: 1034 or 10035 or 5003 } => "Captcha/rate limit, will retry",
         HoyoException h => $"API error {h.Retcode}: {h.Message}",
-        HttpRequestException or TaskCanceledException => "Network error",
+        HttpRequestException or TaskCanceledException => "Network error, retrying",
         _ => e.Message,
     };
 
@@ -223,7 +292,8 @@ class TrayApp : ApplicationContext
         if (globalError != null) lines.Add("⚠ " + globalError);
         else if (shown.Select(s => errors.GetValueOrDefault(Settings.Key(s.Game, s.Account))).FirstOrDefault(e => e != null) is { } err)
             lines.Add("⚠ " + err);
-        if (lines.Count == 0) lines.Add(accounts != null && shown.Count == 0 ? "HoyoTray – nothing selected" : "HoyoTray – loading…");
+        if (lines.Count == 0)
+            lines.Add(refreshing || accounts == null ? "HoyoTray – loading…" : "HoyoTray – nothing selected");
 
         var text = string.Join("\n", lines);
         tray.Text = text.Length > 127 ? text[..127] : text;
@@ -263,14 +333,17 @@ class TrayApp : ApplicationContext
                 item.Side = note.Side;
                 item.SideDone = note.SideDone;
             }
+            else item.Footer = refreshing ? "Loading…" : "No data yet";
             menu.Items.Add(item);
         }
-        if (accounts != null && shown.Count == 0)
-            menu.Items.Add(new TextItem(style, "Nothing selected. Pick games in Settings."));
+        if (shown.Count == 0)
+            menu.Items.Add(new TextItem(style, refreshing || accounts == null
+                ? "Loading your accounts…"
+                : "Nothing selected. Pick games in Settings."));
 
         if (globalError != null) menu.Items.Add(new TextItem(style, "⚠  " + globalError, Theme.Warn));
-        menu.Items.Add(new TextItem(style, lastUpdated is { } t
-            ? $"Updated {t:HH:mm} · next {t + PollInterval:HH:mm}"
+        menu.Items.Add(new TextItem(style, refreshing ? "Updating…"
+            : lastUpdated is { } t ? $"Updated {t:HH:mm} · next {t + PollInterval:HH:mm}"
             : "Not updated yet"));
 
         menu.Items.Add(new SepItem(style));
@@ -288,6 +361,7 @@ class TrayApp : ApplicationContext
     protected override void ExitThreadCore()
     {
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
         tray.Visible = false;
         tray.Dispose();
         base.ExitThreadCore();

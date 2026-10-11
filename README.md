@@ -62,6 +62,8 @@ The exe ends up in `publish\HoyoTray.exe`.
   (readable only by your Windows user), in `%LOCALAPPDATA%\HoyoTray`.
 - They're sent only to HoYoLAB's own servers. Nothing else is contacted.
 - To log out completely, exit the app and delete `%LOCALAPPDATA%\HoyoTray`.
+- The last fetched numbers are cached in `cache.json` (same folder) so they show instantly on launch.
+  It holds only stamina values, nicknames and UIDs.
 - A small troubleshooting log (`log.txt`, same folder) records refresh results and error codes.
   It never contains your cookies.
 
