@@ -32,11 +32,31 @@ Hover the icon for a quick glance, or left/right-click for the full card:
 
 ## Install
 
-1. Download `HoyoTray.exe` from the [latest release](../../releases/latest).
+### With winget
+
+```
+winget install hoyotray
+```
+
+> [!NOTE]
+> The winget package is awaiting approval ([pull request](https://github.com/microsoft/winget-pkgs/pull/450805)).
+> Until it's merged, use the manual download below.
+
+winget installs the .NET 8 Desktop Runtime for you if it's missing. Start the app by typing `hoyotray`
+in the Run dialog (Win+R) or a terminal, then turn on **Start with Windows** in its menu so you don't have to again.
+
+To update later, exit HoyoTray first (its exe can't be replaced while running), then run `winget upgrade hoyotray`.
+
+### Manual download
+
+1. Download `HoyoTray.exe` from the [latest release](../../releases/latest) and put it wherever you like.
 2. Run it. If Windows asks for the **.NET 8 Desktop Runtime**, install it
    ([download](https://dotnet.microsoft.com/download/dotnet/8.0), "Desktop Runtime").
-3. Log in to HoYoLAB in the window that opens. It closes by itself once your login works.
-4. In HoYoLAB → Battle Chronicle → settings, make sure **Real-Time Notes** is enabled for each game.
+
+### First run
+
+1. Log in to HoYoLAB in the window that opens. It closes by itself once your login works.
+2. In HoYoLAB → Battle Chronicle → settings, make sure **Real-Time Notes** is enabled for each game.
 
 ## Settings
 
