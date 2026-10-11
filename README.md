@@ -1,8 +1,17 @@
 # HoyoTray
 
+[![Latest release](https://img.shields.io/github/v/release/hanbay41/HoyoTray)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/hanbay41/HoyoTray/total)](../../releases)
+[![License: 0BSD](https://img.shields.io/github/license/hanbay41/HoyoTray)](LICENSE)
+![Windows](https://img.shields.io/badge/platform-Windows-0078D6)
+
 A tiny Windows system-tray app that shows your **Genshin Impact Original Resin**,
 **Honkai: Star Rail Trailblaze Power** and **Zenless Zone Zero Battery Charge**,
-pulled from HoYoLAB's Real-Time Notes.
+pulled from HoYoLAB's Real-Time Notes (daily notes).
+
+A lightweight resin tracker and stamina reminder for your desktop: see at a glance how much
+resin, trailblaze power or battery you have and exactly when it caps, without opening
+the HoYoLAB app or a game launcher.
 
 Hover the icon for a quick glance, or left/right-click for the full card:
 
