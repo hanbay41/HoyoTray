@@ -12,6 +12,7 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <AssemblyName>HoyoTray</AssemblyName>
+    <Version>1.1.0</Version>
     <ApplicationIcon>Assets\resin.ico</ApplicationIcon>
     <RootNamespace>HoyoTray</RootNamespace>
     <!-- WebView2 package drags in a harmless WPF reference conflict; also skip its XML docs -->
@@ -21,6 +22,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\resin.png" LogicalName="resin.png" />
+    <EmbeddedResource Include="Assets\trailblaze.png" LogicalName="trailblaze.png" />
+    <EmbeddedResource Include="Assets\battery.png" LogicalName="battery.png" />
   </ItemGroup>
 
   <ItemGroup>

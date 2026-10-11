@@ -14,7 +14,7 @@ class HoyoException(int retcode, string message) : Exception(message)
 
 record GameAccount(string Uid, string Region, string Nickname, int Level);
 
-/// <summary>A regenerating stamina value (resin / battery) as of FetchedAt.</summary>
+/// <summary>A regenerating stamina value (resin / power / battery) as of FetchedAt.</summary>
 record Stamina(int Current, int Max, int RecoverySeconds, int SecondsPerUnit, DateTime FetchedAt)
 {
     TimeSpan Remaining => TimeSpan.FromSeconds(
@@ -38,8 +38,22 @@ record Stamina(int Current, int Max, int RecoverySeconds, int SecondsPerUnit, Da
     }
 }
 
-record GenshinNote(Stamina Resin, int Dailies, int DailiesMax, bool DailyRewardClaimed);
-record ZzzNote(Stamina Battery, int Engagement, int EngagementMax);
+/// <summary>Stamina plus one secondary daily stat (commissions / daily training / engagement).</summary>
+record Note(Stamina Stamina, string Side, bool SideDone);
+
+/// <summary>Everything game-specific lives here; the rest of the app just loops over All.</summary>
+record Game(string Key, string Name, string Biz, string StaminaName, string ShortName, Color Accent,
+    Func<string, GameAccount, Task<Note>> Fetch)
+{
+    public static readonly Game Genshin = new("genshin", "Genshin Impact", "hk4e_global",
+        "Original Resin", "Resin", Theme.Resin, HoyoApi.GetGenshin);
+    public static readonly Game Hsr = new("hsr", "Honkai: Star Rail", "hkrpg_global",
+        "Trailblaze Power", "TB Power", Theme.Trailblaze, HoyoApi.GetHsr);
+    public static readonly Game Zzz = new("zzz", "Zenless Zone Zero", "nap_global",
+        "Battery Charge", "Battery", Theme.Battery, HoyoApi.GetZzz);
+
+    public static readonly Game[] All = [Genshin, Hsr, Zzz];
+}
 
 static class HoyoApi
 {
@@ -80,8 +94,15 @@ static class HoyoApi
         return root.GetProperty("data").Clone();
     }
 
-    /// <summary>Highest-level account for a game_biz (hk4e_global / nap_global), or null if none.</summary>
-    public static async Task<GameAccount?> GetAccount(string cookie, string gameBiz)
+    // Some fields come back as numbers in one game and strings in another.
+    static int Int(JsonElement e, string name)
+    {
+        var v = e.GetProperty(name);
+        return v.ValueKind == JsonValueKind.String ? int.Parse(v.GetString()!) : v.GetInt32();
+    }
+
+    /// <summary>All accounts for a game_biz (hk4e_global / hkrpg_global / nap_global), highest level first.</summary>
+    public static async Task<List<GameAccount>> GetAccounts(string cookie, string gameBiz)
     {
         var data = await Get(
             $"https://api-account-os.hoyolab.com/account/binding/api/getUserGameRolesByCookie?game_biz={gameBiz}",
@@ -93,40 +114,51 @@ static class HoyoApi
                 a.GetProperty("nickname").GetString() ?? "",
                 a.GetProperty("level").GetInt32()))
             .OrderByDescending(a => a.Level)
-            .FirstOrDefault();
+            .ToList();
     }
 
-    public static async Task<GenshinNote> GetGenshin(string cookie, GameAccount acc)
+    public static string RegionName(string region) => region switch
+    {
+        _ when region.Contains("usa") || region.EndsWith("_us") => "America",
+        _ when region.Contains("eur") || region.EndsWith("_eu") => "Europe",
+        _ when region.Contains("asia") || region.EndsWith("_jp") => "Asia",
+        _ when region.Contains("cht") || region.EndsWith("_sg") => "TW/HK/MO",
+        _ => region,
+    };
+
+    public static async Task<Note> GetGenshin(string cookie, GameAccount acc)
     {
         var d = await Get(
             $"https://bbs-api-os.hoyolab.com/game_record/genshin/api/dailyNote?server={acc.Region}&role_id={acc.Uid}",
             cookie, ds: true);
-        var resin = new Stamina(
-            d.GetProperty("current_resin").GetInt32(),
-            d.GetProperty("max_resin").GetInt32(),
-            int.Parse(d.GetProperty("resin_recovery_time").GetString() ?? "0"),
-            480, DateTime.Now);
-        return new GenshinNote(resin,
-            d.GetProperty("finished_task_num").GetInt32(),
-            d.GetProperty("total_task_num").GetInt32(),
-            d.GetProperty("is_extra_task_reward_received").GetBoolean());
+        var resin = new Stamina(Int(d, "current_resin"), Int(d, "max_resin"), Int(d, "resin_recovery_time"), 480, DateTime.Now);
+        bool claimed = d.GetProperty("is_extra_task_reward_received").GetBoolean();
+        return new Note(resin,
+            $"Commissions {Int(d, "finished_task_num")}/{Int(d, "total_task_num")}" + (claimed ? " ✓" : ""), claimed);
     }
 
-    public static async Task<ZzzNote> GetZzz(string cookie, GameAccount acc)
+    public static async Task<Note> GetHsr(string cookie, GameAccount acc)
+    {
+        var d = await Get(
+            $"https://bbs-api-os.hoyolab.com/game_record/hkrpg/api/note?server={acc.Region}&role_id={acc.Uid}",
+            cookie, ds: true);
+        var power = new Stamina(Int(d, "current_stamina"), Int(d, "max_stamina"), Int(d, "stamina_recover_time"), 360, DateTime.Now);
+        int score = Int(d, "current_train_score"), max = Int(d, "max_train_score");
+        bool done = score >= max;
+        return new Note(power, $"Daily Training {score}/{max}" + (done ? " ✓" : ""), done);
+    }
+
+    public static async Task<Note> GetZzz(string cookie, GameAccount acc)
     {
         var d = await Get(
             $"https://sg-act-nap-api.hoyolab.com/event/game_record_zzz/api/zzz/note?server={acc.Region}&role_id={acc.Uid}",
             cookie, ds: true);
         var energy = d.GetProperty("energy");
         var progress = energy.GetProperty("progress");
-        var battery = new Stamina(
-            progress.GetProperty("current").GetInt32(),
-            progress.GetProperty("max").GetInt32(),
-            energy.GetProperty("restore").GetInt32(),
-            360, DateTime.Now);
+        var battery = new Stamina(Int(progress, "current"), Int(progress, "max"), Int(energy, "restore"), 360, DateTime.Now);
         var vitality = d.GetProperty("vitality");
-        return new ZzzNote(battery,
-            vitality.GetProperty("current").GetInt32(),
-            vitality.GetProperty("max").GetInt32());
+        int cur = Int(vitality, "current"), max = Int(vitality, "max");
+        bool done = cur >= max;
+        return new Note(battery, $"Engagement {cur}/{max}" + (done ? " ✓" : ""), done);
     }
 }

@@ -1,4 +1,4 @@
-﻿using Microsoft.Win32;
+using Microsoft.Win32;
 
 namespace HoyoTray;
 
@@ -11,20 +11,20 @@ class TrayApp : ApplicationContext
     readonly System.Windows.Forms.Timer pollTimer = new();
     readonly System.Windows.Forms.Timer tickTimer = new() { Interval = 30_000 };
     readonly MenuStyle style = new();
-    readonly Icon okIcon, badIcon;
+    Icon okIcon, badIcon;
 
+    Settings settings = Settings.Load();
     string? cookie = Storage.LoadCookie();
-    GameAccount? genshinAcc, zzzAcc;
-    bool genshinChecked, zzzChecked;
-    GenshinNote? genshin;
-    ZzzNote? zzz;
-    string? genshinError, zzzError, globalError;
+    Dictionary<Game, List<GameAccount>>? accounts; // null until discovered for the current login
+    readonly Dictionary<string, Note> notes = [];  // keyed by Settings.Key(game, account)
+    readonly Dictionary<string, string> errors = [];
+    string? globalError;
     DateTime? lastUpdated;
-    bool refreshing, loginOpen;
+    bool refreshing, loginOpen, settingsOpen;
 
     public TrayApp()
     {
-        (okIcon, badIcon) = Theme.TrayIcons();
+        (okIcon, badIcon) = Theme.TrayIcons(settings.Icon);
         MenuRenderer.Apply(menu, style);
         menu.HandleCreated += (_, _) => Theme.RoundCorners(menu.Handle);
 
@@ -63,6 +63,20 @@ class TrayApp : ApplicationContext
         await Refresh();
     }
 
+    /// <summary>Enabled games and the accounts the user chose to show, in display order.</summary>
+    List<(Game Game, GameAccount Account)> Shown()
+    {
+        var result = new List<(Game, GameAccount)>();
+        if (accounts == null) return result;
+        foreach (var g in Game.All)
+        {
+            if (!settings.GameEnabled(g) || !accounts.TryGetValue(g, out var list)) continue;
+            foreach (var a in list)
+                if (settings.AccountShown(g, a, list)) result.Add((g, a));
+        }
+        return result;
+    }
+
     async Task Login()
     {
         if (loginOpen) return;
@@ -74,7 +88,9 @@ class TrayApp : ApplicationContext
             {
                 cookie = form.Cookie;
                 Storage.SaveCookie(cookie);
-                genshinChecked = zzzChecked = false; // re-detect accounts
+                accounts = null; // re-detect accounts for this login
+                notes.Clear();
+                errors.Clear();
                 globalError = null;
                 await Refresh();
             }
@@ -82,7 +98,41 @@ class TrayApp : ApplicationContext
         finally { loginOpen = false; }
     }
 
-    async Task Refresh()
+    async Task OpenSettings()
+    {
+        if (settingsOpen) return;
+        if (cookie == null) { await Login(); if (cookie == null) return; }
+        if (accounts == null) await Refresh();
+        if (accounts == null)
+        {
+            MessageBox.Show("Couldn't load your game accounts from HoYoLAB.\n\n" + (globalError ?? "Try again in a moment."),
+                "HoyoTray", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        settingsOpen = true;
+        try
+        {
+            using var form = new SettingsForm(settings, accounts);
+            if (form.ShowDialog() != DialogResult.OK) return;
+
+            bool iconChanged = form.Result.Icon != settings.Icon;
+            settings = form.Result;
+            settings.Save();
+            if (iconChanged)
+            {
+                var (oldOk, oldBad) = (okIcon, badIcon);
+                (okIcon, badIcon) = Theme.TrayIcons(settings.Icon);
+                UpdateTooltip();
+                oldOk.Dispose();
+                oldBad.Dispose();
+            }
+            await Refresh(onlyMissing: true); // fetch accounts that were just switched on
+        }
+        finally { settingsOpen = false; }
+    }
+
+    async Task Refresh(bool onlyMissing = false)
     {
         if (refreshing) return;
         if (cookie == null) { globalError = "Not logged in"; UpdateTooltip(); return; }
@@ -91,18 +141,43 @@ class TrayApp : ApplicationContext
         {
             globalError = null;
 
-            if (!genshinChecked) { genshinAcc = await HoyoApi.GetAccount(cookie, "hk4e_global"); genshinChecked = true; }
-            if (!zzzChecked) { zzzAcc = await HoyoApi.GetAccount(cookie, "nap_global"); zzzChecked = true; }
+            if (accounts == null)
+            {
+                var found = new Dictionary<Game, List<GameAccount>>();
+                foreach (var g in Game.All)
+                    found[g] = await HoyoApi.GetAccounts(cookie, g.Biz);
+                accounts = found;
+                Log.Write("Accounts: " + string.Join(", ", found.Select(kv => $"{kv.Key.Key}={kv.Value.Count}")));
+            }
 
-            if (genshinAcc != null)
-                (genshin, genshinError) = await Fetch(() => HoyoApi.GetGenshin(cookie, genshinAcc));
-            if (zzzAcc != null)
-                (zzz, zzzError) = await Fetch(() => HoyoApi.GetZzz(cookie, zzzAcc));
+            foreach (var (g, a) in Shown())
+            {
+                var key = Settings.Key(g, a);
+                if (onlyMissing && notes.ContainsKey(key)) continue;
+                try
+                {
+                    var note = await g.Fetch(cookie, a);
+                    notes[key] = note;
+                    errors.Remove(key);
+                    Log.Write($"{key} ok {note.Stamina.Current}/{note.Stamina.Max}, {note.Side}");
+                }
+                catch (HoyoException e) when (e.AuthExpired) { SetAuthExpired(); break; }
+                catch (Exception e)
+                {
+                    // Keep the previous note so the estimate keeps ticking.
+                    errors[key] = Describe(e);
+                    Log.Write($"{key} error: {LogText(e)}");
+                }
+            }
 
             if (globalError == null) lastUpdated = DateTime.Now;
         }
         catch (HoyoException e) when (e.AuthExpired) { SetAuthExpired(); }
-        catch (Exception e) { globalError = Describe(e); }
+        catch (Exception e)
+        {
+            globalError = Describe(e);
+            Log.Write($"Refresh error: {LogText(e)}");
+        }
         finally
         {
             refreshing = false;
@@ -110,21 +185,15 @@ class TrayApp : ApplicationContext
         }
     }
 
-    // Per-game fetch: keeps the previous value on failure so the estimate keeps ticking.
-    async Task<(T?, string?)> Fetch<T>(Func<Task<T>> f) where T : class
-    {
-        var previous = typeof(T) == typeof(GenshinNote) ? genshin as T : zzz as T;
-        try { return (await f(), null); }
-        catch (HoyoException e) when (e.AuthExpired) { SetAuthExpired(); return (previous, null); }
-        catch (Exception e) { return (previous, Describe(e)); }
-    }
-
     void SetAuthExpired()
     {
         bool first = globalError != "Login expired";
         globalError = "Login expired";
         if (first)
+        {
+            Log.Write("Login expired");
             tray.ShowBalloonTip(5000, "HoyoTray", "HoYoLAB login expired. Click here or right-click → Log in.", ToolTipIcon.Warning);
+        }
     }
 
     static string Describe(Exception e) => e switch
@@ -136,14 +205,25 @@ class TrayApp : ApplicationContext
         _ => e.Message,
     };
 
+    static string LogText(Exception e) => e is HoyoException h ? $"retcode {h.Retcode} {h.Message}" : $"{e.GetType().Name}: {e.Message}";
+
     void UpdateTooltip()
     {
         var lines = new List<string>();
-        if (genshin != null) lines.Add($"Resin {genshin.Resin.Estimate()}/{genshin.Resin.Max} ({genshin.Resin.FullIn()})");
-        if (zzz != null) lines.Add($"Battery {zzz.Battery.Estimate()}/{zzz.Battery.Max} ({zzz.Battery.FullIn()})");
+        var shown = Shown();
+        foreach (var group in shown.GroupBy(s => s.Game))
+        {
+            var withNotes = group.Where(s => notes.ContainsKey(Settings.Key(s.Game, s.Account)))
+                .Select(s => notes[Settings.Key(s.Game, s.Account)].Stamina).ToList();
+            if (withNotes.Count == 0) continue;
+            lines.Add(withNotes.Count == 1
+                ? $"{group.Key.ShortName} {withNotes[0].Estimate()}/{withNotes[0].Max} ({withNotes[0].FullIn()})"
+                : $"{group.Key.ShortName} " + string.Join(", ", withNotes.Select(s => $"{s.Estimate()}/{s.Max}")));
+        }
         if (globalError != null) lines.Add("⚠ " + globalError);
-        else if (genshinError != null || zzzError != null) lines.Add("⚠ " + (genshinError ?? zzzError));
-        if (lines.Count == 0) lines.Add("HoyoTray – loading…");
+        else if (shown.Select(s => errors.GetValueOrDefault(Settings.Key(s.Game, s.Account))).FirstOrDefault(e => e != null) is { } err)
+            lines.Add("⚠ " + err);
+        if (lines.Count == 0) lines.Add(accounts != null && shown.Count == 0 ? "HoyoTray – nothing selected" : "HoyoTray – loading…");
 
         var text = string.Join("\n", lines);
         tray.Text = text.Length > 127 ? text[..127] : text;
@@ -161,41 +241,32 @@ class TrayApp : ApplicationContext
         static string Footer(Stamina s) =>
             s.Estimate() >= s.Max ? "Full!" : $"F{s.FullIn()[1..]} · {s.FullAt:HH:mm}";
 
-        if (genshinAcc != null)
+        var shown = Shown();
+        foreach (var (g, a) in shown)
         {
+            if (menu.Items.Count > 0) menu.Items.Add(new SepItem(style));
+            var key = Settings.Key(g, a);
+            bool several = shown.Count(s => s.Game == g) > 1;
             var item = new StatItem(style)
             {
-                Game = "Genshin Impact", Account = genshinAcc.Nickname, Label = "Original Resin",
-                Accent = Theme.Resin, Warning = genshinError,
+                Game = g.Name,
+                Account = several ? $"{a.Nickname} · {a.Uid}" : a.Nickname,
+                Label = g.StaminaName,
+                Accent = g.Accent,
+                Warning = errors.GetValueOrDefault(key),
             };
-            if (genshin != null)
+            if (notes.TryGetValue(key, out var note))
             {
-                item.Current = genshin.Resin.Estimate();
-                item.Max = genshin.Resin.Max;
-                item.Footer = Footer(genshin.Resin);
-                item.Side = $"Commissions {genshin.Dailies}/{genshin.DailiesMax}" + (genshin.DailyRewardClaimed ? " ✓" : "");
-                item.SideDone = genshin.DailyRewardClaimed;
+                item.Current = note.Stamina.Estimate();
+                item.Max = note.Stamina.Max;
+                item.Footer = Footer(note.Stamina);
+                item.Side = note.Side;
+                item.SideDone = note.SideDone;
             }
             menu.Items.Add(item);
         }
-        if (zzzAcc != null)
-        {
-            if (genshinAcc != null) menu.Items.Add(new SepItem(style));
-            var item = new StatItem(style)
-            {
-                Game = "Zenless Zone Zero", Account = zzzAcc.Nickname, Label = "Battery Charge",
-                Accent = Theme.Battery, Warning = zzzError,
-            };
-            if (zzz != null)
-            {
-                item.Current = zzz.Battery.Estimate();
-                item.Max = zzz.Battery.Max;
-                item.Footer = Footer(zzz.Battery);
-                item.Side = $"Engagement {zzz.Engagement}/{zzz.EngagementMax}" + (zzz.Engagement >= zzz.EngagementMax ? " ✓" : "");
-                item.SideDone = zzz.Engagement >= zzz.EngagementMax;
-            }
-            menu.Items.Add(item);
-        }
+        if (accounts != null && shown.Count == 0)
+            menu.Items.Add(new TextItem(style, "Nothing selected. Pick games in Settings."));
 
         if (globalError != null) menu.Items.Add(new TextItem(style, "⚠  " + globalError, Theme.Warn));
         menu.Items.Add(new TextItem(style, lastUpdated is { } t
@@ -203,12 +274,13 @@ class TrayApp : ApplicationContext
             : "Not updated yet"));
 
         menu.Items.Add(new SepItem(style));
-        menu.Items.Add(new ActionItem(style, "\uE72C", "Refresh now", async (_, _) => await Refresh()));
-        menu.Items.Add(new ActionItem(style, "\uE7E8", "Start with Windows",
+        menu.Items.Add(new ActionItem(style, "", "Refresh now", async (_, _) => await Refresh()));
+        menu.Items.Add(new ActionItem(style, "", "Settings…", async (_, _) => await OpenSettings()));
+        menu.Items.Add(new ActionItem(style, "", "Start with Windows",
             (_, _) => Storage.StartupEnabled = !Storage.StartupEnabled) { Toggle = Storage.StartupEnabled });
-        menu.Items.Add(new ActionItem(style, "\uE77B", cookie == null ? "Log in…" : "Log in again…", async (_, _) => await Login()));
+        menu.Items.Add(new ActionItem(style, "", cookie == null ? "Log in…" : "Log in again…", async (_, _) => await Login()));
         menu.Items.Add(new SepItem(style));
-        menu.Items.Add(new ActionItem(style, "\uE711", "Exit", (_, _) => ExitThread()));
+        menu.Items.Add(new ActionItem(style, "", "Exit", (_, _) => ExitThread()));
 
         MenuRenderer.FitWidth(menu, style);
     }

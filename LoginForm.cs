@@ -46,7 +46,7 @@ class LoginForm : Form
 
             var cookie = string.Join("; ", cookies.Select(c => $"{c.Name}={c.Value}"));
             // Validate: an old expired token may still sit in the browser profile.
-            try { await HoyoApi.GetAccount(cookie, "hk4e_global"); }
+            try { await HoyoApi.GetAccounts(cookie, Game.Genshin.Biz); }
             catch (HoyoException e) when (e.AuthExpired) { return; }
 
             poll.Stop();

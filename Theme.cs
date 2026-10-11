@@ -9,8 +9,10 @@ namespace HoyoTray;
 class Theme
 {
     public Color Back, Border, Text, Dim, Hover, Track, Separator;
+    public bool Dark;
     public static readonly Color Resin = Color.FromArgb(90, 169, 255);
     public static readonly Color Battery = Color.FromArgb(245, 184, 61);
+    public static readonly Color Trailblaze = Color.FromArgb(196, 146, 255);
     public static readonly Color Good = Color.FromArgb(76, 195, 138);
     public static readonly Color Warn = Color.FromArgb(255, 159, 67);
 
@@ -34,6 +36,7 @@ class Theme
             }
             : new Theme
             {
+                Dark = true,
                 Back = Color.FromArgb(40, 40, 40), Border = Color.FromArgb(60, 60, 60),
                 Text = Color.FromArgb(245, 245, 245), Dim = Color.FromArgb(160, 160, 160),
                 Hover = Color.FromArgb(58, 58, 58), Track = Color.FromArgb(68, 68, 68),
@@ -64,16 +67,32 @@ class Theme
         try { DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, sizeof(int)); } catch { }
     }
 
+    public static void DarkTitleBar(IntPtr hwnd)
+    {
+        int on = 1;
+        try { DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref on, sizeof(int)); } catch { }
+    }
+
     // ---- Tray icon ----
     [DllImport("user32.dll")]
     static extern bool DestroyIcon(IntPtr handle);
 
-    /// <summary>Original Resin art (embedded resin.png), plus a greyed-out copy for error states.</summary>
-    public static (Icon ok, Icon bad) TrayIcons()
+    /// <summary>Selectable tray icons: key (embedded &lt;key&gt;.png) and display name.</summary>
+    public static readonly (string Key, string Name)[] IconChoices =
+        [("resin", "Original Resin"), ("trailblaze", "Trailblaze Power"), ("battery", "Battery Charge")];
+
+    public static Bitmap LoadArt(string key)
+    {
+        if (!IconChoices.Any(c => c.Key == key)) key = "resin";
+        using var stream = typeof(Theme).Assembly.GetManifestResourceStream($"{key}.png")!;
+        return new Bitmap(stream);
+    }
+
+    /// <summary>The chosen icon art, plus a greyed-out copy for error states.</summary>
+    public static (Icon ok, Icon bad) TrayIcons(string key)
     {
         var size = SystemInformation.SmallIconSize;
-        using var stream = typeof(Theme).Assembly.GetManifestResourceStream("resin.png")!;
-        using var art = new Bitmap(stream);
+        using var art = LoadArt(key);
         using var ok = Resize(art, size);
         using var bad = Grayscale(ok);
         return (ToIcon(ok), ToIcon(bad));
