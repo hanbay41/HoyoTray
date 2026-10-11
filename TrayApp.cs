@@ -60,9 +60,12 @@ class TrayApp : ApplicationContext
                     ?.Invoke(tray, null);
         };
         tray.BalloonTipClicked += (_, _) => { if (cookie == null || globalError != null) _ = Login(); };
+        // NotifyIcon positions the menu using its size *before* Opening fires. Building it on mouse down
+        // means that size is already right; otherwise a size change pushes the menu into the screen corner.
+        tray.MouseDown += (_, _) => PrepareMenu();
         menu.Opening += (_, e) =>
         {
-            BuildMenu();
+            PrepareMenu(); // still needed for keyboard opening (Win+B, Enter)
             e.Cancel = false; // WinForms pre-cancels opening an empty menu, i.e. the very first open
         };
         // ItemClicked fires before the menu closes itself, so it can veto that close.
@@ -269,8 +272,14 @@ class TrayApp : ApplicationContext
     /// </summary>
     void UpdateMenu()
     {
-        if (!menu.Visible || buildingMenu) return;
-        if (MenuLayout() != menuLayout) { BuildMenu(); return; }
+        if (menu.Visible) PrepareMenu();
+    }
+
+    /// <summary>Rebuilds the menu only if its layout changed; otherwise just refreshes the values shown.</summary>
+    void PrepareMenu()
+    {
+        if (buildingMenu) return;
+        if (menu.Items.Count == 0 || MenuLayout() != menuLayout) { BuildMenu(); return; }
         foreach (var (g, a, item) in menuStats) FillStat(item, g, a);
         if (menuStatus != null) menuStatus.Value = StatusText();
         menu.Invalidate(true);
@@ -345,6 +354,7 @@ class TrayApp : ApplicationContext
         var parts = shown.Select(s => Settings.Key(s.Game, s.Account) + (errors.ContainsKey(Settings.Key(s.Game, s.Account)) ? "!" : "")).ToList();
         if (shown.Count == 0) parts.Add(EmptyText());
         parts.Add(globalError ?? "");
+        parts.Add($"{Theme.Current().Dark}/{menu.DeviceDpi}/{cookie == null}/{Storage.StartupEnabled}");
         return string.Join("|", parts);
     }
 
