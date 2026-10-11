@@ -1,4 +1,4 @@
-using System.Net.NetworkInformation;
+﻿using System.Net.NetworkInformation;
 using Microsoft.Win32;
 
 namespace HoyoTray;
@@ -27,8 +27,14 @@ class TrayApp : ApplicationContext
     readonly Dictionary<string, string> errors = [];
     string? globalError;
     DateTime? lastUpdated;
-    bool refreshing, loginOpen, settingsOpen, needsRetry;
+    bool refreshing, loginOpen, settingsOpen, needsRetry, keepMenuOpen;
     int retryCount;
+
+    // What the currently built menu shows, so an open menu can be updated in place.
+    readonly List<(Game Game, GameAccount Account, StatItem Item)> menuStats = [];
+    TextItem? menuStatus;
+    string menuLayout = "";
+    bool buildingMenu;
 
     public TrayApp()
     {
@@ -54,12 +60,23 @@ class TrayApp : ApplicationContext
                     ?.Invoke(tray, null);
         };
         tray.BalloonTipClicked += (_, _) => { if (cookie == null || globalError != null) _ = Login(); };
-        menu.Opening += (_, _) => BuildMenu();
+        menu.Opening += (_, e) =>
+        {
+            BuildMenu();
+            e.Cancel = false; // WinForms pre-cancels opening an empty menu, i.e. the very first open
+        };
+        // ItemClicked fires before the menu closes itself, so it can veto that close.
+        menu.ItemClicked += (_, e) => keepMenuOpen = e.ClickedItem is ActionItem { KeepOpen: true };
+        menu.Closing += (_, e) =>
+        {
+            if (e.CloseReason == ToolStripDropDownCloseReason.ItemClicked && keepMenuOpen) e.Cancel = true;
+            keepMenuOpen = false;
+        };
 
         pollTimer.Interval = (int)PollInterval.TotalMilliseconds;
         pollTimer.Tick += async (_, _) => await Refresh();
         retryTimer.Tick += async (_, _) => { retryTimer.Stop(); await Refresh(); };
-        tickTimer.Tick += (_, _) => UpdateTooltip();
+        tickTimer.Tick += (_, _) => { UpdateTooltip(); UpdateMenuIfOpen(); };
         pollTimer.Start();
         tickTimer.Start();
 
@@ -180,6 +197,7 @@ class TrayApp : ApplicationContext
         if (cookie == null) { globalError = "Not logged in"; UpdateTooltip(); return; }
         refreshing = true;
         UpdateTooltip();
+        UpdateMenuIfOpen();
         bool transientFailure = false;
         try
         {
@@ -235,7 +253,27 @@ class TrayApp : ApplicationContext
             refreshing = false;
             ScheduleRetry(transientFailure);
             UpdateTooltip();
+            UpdateMenuIfOpen();
         }
+    }
+
+    // Posted so it never runs inside a menu item's own click handling.
+    void UpdateMenuIfOpen()
+    {
+        if (menu.Visible) ui.Post(_ => UpdateMenu(), null);
+    }
+
+    /// <summary>
+    /// Refreshes an open menu. Same layout → update the existing items and repaint (no resize, no flicker).
+    /// Different layout (cards added/removed, warnings appearing) → full rebuild.
+    /// </summary>
+    void UpdateMenu()
+    {
+        if (!menu.Visible || buildingMenu) return;
+        if (MenuLayout() != menuLayout) { BuildMenu(); return; }
+        foreach (var (g, a, item) in menuStats) FillStat(item, g, a);
+        if (menuStatus != null) menuStatus.Value = StatusText();
+        menu.Invalidate(true);
     }
 
     void ScheduleRetry(bool failed)
@@ -300,62 +338,97 @@ class TrayApp : ApplicationContext
         tray.Icon = globalError != null ? badIcon : okIcon;
     }
 
+    // Everything that changes which items exist or their heights.
+    string MenuLayout()
+    {
+        var shown = Shown();
+        var parts = shown.Select(s => Settings.Key(s.Game, s.Account) + (errors.ContainsKey(Settings.Key(s.Game, s.Account)) ? "!" : "")).ToList();
+        if (shown.Count == 0) parts.Add(EmptyText());
+        parts.Add(globalError ?? "");
+        return string.Join("|", parts);
+    }
+
+    string EmptyText() => refreshing || accounts == null ? "Loading your accounts…" : "Nothing selected. Pick games in Settings.";
+
+    string StatusText() => refreshing ? "Updating…"
+        : lastUpdated is { } t ? $"Updated {t:HH:mm} · next {t + PollInterval:HH:mm}"
+        : "Not updated yet";
+
+    void FillStat(StatItem item, Game g, GameAccount a)
+    {
+        var key = Settings.Key(g, a);
+        item.Warning = errors.GetValueOrDefault(key);
+        if (notes.TryGetValue(key, out var note))
+        {
+            var s = note.Stamina;
+            item.Current = s.Estimate();
+            item.Max = s.Max;
+            item.Footer = s.Estimate() >= s.Max ? "Full!" : $"F{s.FullIn()[1..]} · {s.FullAt:HH:mm}";
+            item.Side = note.Side;
+            item.SideDone = note.SideDone;
+        }
+        else
+        {
+            item.Current = item.Max = 0;
+            item.Footer = refreshing ? "Loading…" : "No data yet";
+            item.Side = "";
+            item.SideDone = false;
+        }
+    }
+
     void BuildMenu()
     {
-        style.T = Theme.Current();
-        style.Scale = menu.DeviceDpi / 96f;
-
-        foreach (ToolStripItem old in menu.Items.Cast<ToolStripItem>().ToList()) old.Dispose();
-        menu.Items.Clear();
-
-        static string Footer(Stamina s) =>
-            s.Estimate() >= s.Max ? "Full!" : $"F{s.FullIn()[1..]} · {s.FullAt:HH:mm}";
-
-        var shown = Shown();
-        foreach (var (g, a) in shown)
+        buildingMenu = true;
+        try
         {
-            if (menu.Items.Count > 0) menu.Items.Add(new SepItem(style));
-            var key = Settings.Key(g, a);
-            bool several = shown.Count(s => s.Game == g) > 1;
-            var item = new StatItem(style)
+            style.T = Theme.Current();
+            style.Scale = menu.DeviceDpi / 96f;
+
+            foreach (ToolStripItem old in menu.Items.Cast<ToolStripItem>().ToList()) old.Dispose();
+            menu.Items.Clear();
+            menuStats.Clear();
+
+            var shown = Shown();
+            foreach (var (g, a) in shown)
             {
-                Game = g.Name,
-                Account = several ? $"{a.Nickname} · {a.Uid}" : a.Nickname,
-                Label = g.StaminaName,
-                Accent = g.Accent,
-                Warning = errors.GetValueOrDefault(key),
-            };
-            if (notes.TryGetValue(key, out var note))
-            {
-                item.Current = note.Stamina.Estimate();
-                item.Max = note.Stamina.Max;
-                item.Footer = Footer(note.Stamina);
-                item.Side = note.Side;
-                item.SideDone = note.SideDone;
+                if (menu.Items.Count > 0) menu.Items.Add(new SepItem(style));
+                bool several = shown.Count(s => s.Game == g) > 1;
+                var item = new StatItem(style)
+                {
+                    Game = g.Name,
+                    Account = several ? $"{a.Nickname} · {a.Uid}" : a.Nickname,
+                    Label = g.StaminaName,
+                    Accent = g.Accent,
+                };
+                FillStat(item, g, a);
+                menuStats.Add((g, a, item));
+                menu.Items.Add(item);
             }
-            else item.Footer = refreshing ? "Loading…" : "No data yet";
-            menu.Items.Add(item);
+            if (shown.Count == 0) menu.Items.Add(new TextItem(style, EmptyText()));
+
+            if (globalError != null) menu.Items.Add(new TextItem(style, "⚠  " + globalError, Theme.Warn));
+            menuStatus = new TextItem(style, StatusText());
+            menu.Items.Add(menuStatus);
+
+            menu.Items.Add(new SepItem(style));
+            menu.Items.Add(new ActionItem(style, "\uE72C", "Refresh now", async (_, _) => await Refresh()) { KeepOpen = true });
+            menu.Items.Add(new ActionItem(style, "\uE713", "Settings…", async (_, _) => await OpenSettings()));
+            menu.Items.Add(new ActionItem(style, "\uE7E8", "Start with Windows", (s, _) =>
+            {
+                Storage.StartupEnabled = !Storage.StartupEnabled;
+                var item = (ActionItem)s!;
+                item.Toggle = Storage.StartupEnabled;
+                item.Invalidate();
+            }) { Toggle = Storage.StartupEnabled, KeepOpen = true });
+            menu.Items.Add(new ActionItem(style, "\uE77B", cookie == null ? "Log in…" : "Log in again…", async (_, _) => await Login()));
+            menu.Items.Add(new SepItem(style));
+            menu.Items.Add(new ActionItem(style, "\uE711", "Exit", (_, _) => ExitThread()));
+
+            menuLayout = MenuLayout();
+            // Resizing a visible menu pumps messages, hence the buildingMenu guard against re-entry.
+            MenuRenderer.FitWidth(menu, style);
         }
-        if (shown.Count == 0)
-            menu.Items.Add(new TextItem(style, refreshing || accounts == null
-                ? "Loading your accounts…"
-                : "Nothing selected. Pick games in Settings."));
-
-        if (globalError != null) menu.Items.Add(new TextItem(style, "⚠  " + globalError, Theme.Warn));
-        menu.Items.Add(new TextItem(style, refreshing ? "Updating…"
-            : lastUpdated is { } t ? $"Updated {t:HH:mm} · next {t + PollInterval:HH:mm}"
-            : "Not updated yet"));
-
-        menu.Items.Add(new SepItem(style));
-        menu.Items.Add(new ActionItem(style, "", "Refresh now", async (_, _) => await Refresh()));
-        menu.Items.Add(new ActionItem(style, "", "Settings…", async (_, _) => await OpenSettings()));
-        menu.Items.Add(new ActionItem(style, "", "Start with Windows",
-            (_, _) => Storage.StartupEnabled = !Storage.StartupEnabled) { Toggle = Storage.StartupEnabled });
-        menu.Items.Add(new ActionItem(style, "", cookie == null ? "Log in…" : "Log in again…", async (_, _) => await Login()));
-        menu.Items.Add(new SepItem(style));
-        menu.Items.Add(new ActionItem(style, "", "Exit", (_, _) => ExitThread()));
-
-        MenuRenderer.FitWidth(menu, style);
+        finally { buildingMenu = false; }
     }
 
     protected override void ExitThreadCore()

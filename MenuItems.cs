@@ -153,11 +153,13 @@ class SepItem(MenuStyle st) : ToolStripItem
 /// <summary>Small non-clickable text line (status / warnings).</summary>
 class TextItem(MenuStyle st, string text, Color? color = null) : ToolStripItem
 {
+    public string Value = text;
+
     public override bool CanSelect => false;
     public override Size GetPreferredSize(Size constrainingSize) => new(st.Width, st.S(26));
 
     protected override void OnPaint(PaintEventArgs e) =>
-        MenuStyle.Text(e.Graphics, text, st.Small, color ?? st.T.Dim,
+        MenuStyle.Text(e.Graphics, Value, st.Small, color ?? st.T.Dim,
             new Rectangle(st.S(14), 0, Width - st.S(28), Height), TextFormatFlags.VerticalCenter);
 }
 
@@ -167,6 +169,8 @@ class ActionItem : ToolStripButton
     readonly MenuStyle st;
     readonly string glyph;
     public bool? Toggle;
+    /// <summary>Clicking doesn't close the menu (handled by TrayApp via ItemClicked/Closing).</summary>
+    public bool KeepOpen;
 
     public ActionItem(MenuStyle st, string glyph, string text, EventHandler onClick) : base(text, null, onClick)
     {
