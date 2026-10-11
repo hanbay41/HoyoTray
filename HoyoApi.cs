@@ -73,8 +73,19 @@ static class HoyoApi
 
     static async Task<JsonElement> Get(string url, string cookie, bool ds)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.TryAddWithoutValidation("Cookie", cookie);
+        var root = await Request(HttpMethod.Get, url, cookie, ds);
+        int retcode = root.GetProperty("retcode").GetInt32();
+        if (retcode != 0)
+            throw new HoyoException(retcode, root.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "");
+        return root.GetProperty("data").Clone();
+    }
+
+    /// <summary>Raw request returning the whole response (retcode, message, data) without judging the retcode.</summary>
+    internal static async Task<JsonElement> Request(HttpMethod method, string url, string? cookie, bool ds = false,
+        Dictionary<string, string>? headers = null, string? json = null)
+    {
+        using var req = new HttpRequestMessage(method, url);
+        if (cookie != null) req.Headers.TryAddWithoutValidation("Cookie", cookie);
         req.Headers.TryAddWithoutValidation("User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
         req.Headers.TryAddWithoutValidation("Referer", "https://act.hoyolab.com/");
@@ -83,15 +94,13 @@ static class HoyoApi
         req.Headers.TryAddWithoutValidation("x-rpc-client_type", "5");
         req.Headers.TryAddWithoutValidation("x-rpc-language", "en-us");
         if (ds) req.Headers.TryAddWithoutValidation("DS", Ds());
+        foreach (var (k, v) in headers ?? []) req.Headers.TryAddWithoutValidation(k, v);
+        if (json != null) req.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var resp = await Http.SendAsync(req);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        var root = doc.RootElement;
-        int retcode = root.GetProperty("retcode").GetInt32();
-        if (retcode != 0)
-            throw new HoyoException(retcode, root.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "");
-        return root.GetProperty("data").Clone();
+        return doc.RootElement.Clone();
     }
 
     // Some fields come back as numbers in one game and strings in another.

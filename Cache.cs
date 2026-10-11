@@ -11,6 +11,7 @@ class Cache
     public Dictionary<string, List<GameAccount>> Accounts { get; set; } = []; // by Game.Key
     public Dictionary<string, Note> Notes { get; set; } = [];                // by Settings.Key
     public DateTime? LastUpdated { get; set; }
+    public RewardState Rewards { get; set; } = new();
 
     static string FilePath => Path.Combine(Storage.Dir, "cache.json");
 
@@ -34,4 +35,15 @@ class Cache
     {
         try { File.Delete(FilePath); } catch { }
     }
+}
+
+/// <summary>What the rewards features have done, so nothing is claimed, redeemed or announced twice.</summary>
+class RewardState
+{
+    public Dictionary<string, string> CheckedIn { get; set; } = [];      // game → day (UTC+8) confirmed claimed
+    public Dictionary<string, string> CheckInNeedsYou { get; set; } = []; // game → day a captcha blocked it
+    public Dictionary<string, List<CodeOffer>> Offers { get; set; } = []; // game → codes currently on HoYoLAB
+    public HashSet<string> CodesDone { get; set; } = [];                 // "game:uid:CODE" handled for good
+    public HashSet<string> CodesNeedYou { get; set; } = [];              // "game:uid:CODE" to redeem on the website
+    public HashSet<string> CodesAnnounced { get; set; } = [];            // "game:CODE" already notified
 }

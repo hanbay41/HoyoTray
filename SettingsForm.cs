@@ -1,4 +1,4 @@
-using System.Drawing.Drawing2D;
+﻿using System.Drawing.Drawing2D;
 
 namespace HoyoTray;
 
@@ -35,22 +35,36 @@ class SettingsForm : Form
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         if (t.Dark) HandleCreated += (_, _) => Theme.DarkTitleBar(Handle);
 
-        var flow = new FlowLayoutPanel
+        var outer = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoSize = true,
             Padding = new Padding(S(20), S(14), S(20), S(18)),
         };
-        Controls.Add(flow);
+        Controls.Add(outer);
+        var columns = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        outer.Controls.Add(columns);
+        FlowLayoutPanel Column(int leftMargin) => new()
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            Margin = new Padding(leftMargin, 0, 0, 0),
+        };
+        var left = Column(0);
+        var right = Column(S(32));
+        columns.Controls.Add(left);
+        columns.Controls.Add(right);
 
-        flow.Controls.Add(Header("Games & accounts", first: true));
+        // ---- Left: games & accounts, tray icon ----
+        left.Controls.Add(Header("Games & accounts", first: true));
         foreach (var g in Game.All)
         {
             var list = accounts.TryGetValue(g, out var l) ? l : [];
             var gameRow = new ToggleRow(this, g.Name, list.Count == 0 ? "No account on this HoYoLAB login" : null,
                 Result.GameEnabled(g), bold, accent: g.Accent);
-            flow.Controls.Add(gameRow);
+            left.Controls.Add(gameRow);
 
             var rows = new List<ToggleRow>();
             foreach (var a in list)
@@ -59,7 +73,7 @@ class SettingsForm : Form
                     Result.AccountShown(g, a, list), body, indent: S(22)) { Enabled = gameRow.Checked };
                 row.Changed += () => Result.Accounts[Settings.Key(g, a)] = row.Checked;
                 rows.Add(row);
-                flow.Controls.Add(row);
+                left.Controls.Add(row);
             }
             gameRow.Changed += () =>
             {
@@ -69,7 +83,7 @@ class SettingsForm : Form
             };
         }
 
-        flow.Controls.Add(Header("Tray icon"));
+        left.Controls.Add(Header("Tray icon"));
         var tiles = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
         var tileList = new List<IconTile>();
         foreach (var (key, name) in Theme.IconChoices)
@@ -83,7 +97,45 @@ class SettingsForm : Form
             tileList.Add(tile);
             tiles.Controls.Add(tile);
         }
-        flow.Controls.Add(tiles);
+        left.Controls.Add(tiles);
+
+        // ---- Right: daily rewards ----
+        right.Controls.Add(Header("Daily rewards", first: true));
+        right.Controls.Add(new Label
+        {
+            Text = "Claims the HoYoLAB daily check-in and redeems codes posted on HoYoLAB (e.g. after livestreams). " +
+                   "These act on your account, so check-in is off and codes only notify you by default.",
+            Font = small,
+            ForeColor = t.Dim,
+            AutoSize = true,
+            MaximumSize = new Size(S(440), 0),
+            Margin = new Padding(0, 0, 0, S(8)),
+        });
+        bool anyGame = false;
+        foreach (var g in Game.All)
+        {
+            if (!accounts.TryGetValue(g, out var list) || list.Count == 0) continue;
+            anyGame = true;
+            right.Controls.Add(new ToggleRow(this, g.Name, null, false, bold, accent: g.Accent, showToggle: false));
+
+            var checkIn = new ToggleRow(this, "Daily check-in", "Claims the reward once a day",
+                Result.AutoCheckIn.Contains(g.Key), body, indent: S(22));
+            checkIn.Changed += () =>
+            {
+                if (checkIn.Checked) Result.AutoCheckIn.Add(g.Key);
+                else Result.AutoCheckIn.Remove(g.Key);
+            };
+            right.Controls.Add(checkIn);
+
+            string[] modes = ["off", "notify", "auto"];
+            var codes = new ChoiceRow(this, "Redemption codes", ["Off", "Notify", "Auto"],
+                Math.Max(0, Array.IndexOf(modes, Result.CodeMode(g))),
+                ["Ignored", "Tells you about new codes", "Redeems new codes automatically"], body, indent: S(22));
+            codes.Changed += () => Result.Codes[g.Key] = modes[codes.Selected];
+            right.Controls.Add(codes);
+        }
+        if (!anyGame)
+            right.Controls.Add(new Label { Text = "No game accounts found.", Font = small, ForeColor = t.Dim, AutoSize = true });
 
         var done = new Button
         {
@@ -99,7 +151,7 @@ class SettingsForm : Form
         };
         done.FlatAppearance.BorderSize = 0;
         done.FlatAppearance.BorderColor = Theme.Resin; // default-button outline would otherwise be white
-        flow.Controls.Add(done);
+        outer.Controls.Add(done);
         AcceptButton = done;
         CancelButton = done;
     }
@@ -122,6 +174,7 @@ class SettingsForm : Form
         readonly Font font;
         readonly Color? accent;
         readonly int indent;
+        readonly bool showToggle;
         bool isChecked, hover;
 
         public event Action? Changed;
@@ -132,7 +185,9 @@ class SettingsForm : Form
             set { isChecked = value; Invalidate(); }
         }
 
-        public ToggleRow(SettingsForm f, string text, string? sub, bool isChecked, Font font, Color? accent = null, int indent = 0)
+        /// <param name="showToggle">false = plain heading row (no switch, not clickable).</param>
+        public ToggleRow(SettingsForm f, string text, string? sub, bool isChecked, Font font, Color? accent = null, int indent = 0,
+            bool showToggle = true)
         {
             this.f = f;
             this.sub = sub;
@@ -140,21 +195,25 @@ class SettingsForm : Form
             this.accent = accent;
             this.indent = indent;
             this.isChecked = isChecked;
+            this.showToggle = showToggle;
             Text = text;
             DoubleBuffered = true;
-            Cursor = Cursors.Hand;
+            Cursor = showToggle ? Cursors.Hand : Cursors.Default;
             Size = new Size(f.S(440), f.S(sub == null ? 36 : 46));
             Margin = new Padding(0, 0, 0, f.S(2));
         }
 
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseEnter(EventArgs e) { hover = showToggle; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
 
         protected override void OnClick(EventArgs e)
         {
-            Checked = !Checked;
-            Changed?.Invoke();
+            if (showToggle)
+            {
+                Checked = !Checked;
+                Changed?.Invoke();
+            }
             base.OnClick(e);
         }
 
@@ -191,6 +250,8 @@ class SettingsForm : Form
                 TextRenderer.DrawText(g, sub, f.small, new Rectangle(x, f.S(25), textW, f.S(18)), t.Dim, flags);
             }
 
+            if (!showToggle) return;
+
             // Toggle switch
             var r = new RectangleF(Width - f.S(52), (Height - f.S(20)) / 2f, f.S(40), f.S(20));
             using var path = Theme.Rounded(r, r.Height / 2);
@@ -209,6 +270,94 @@ class SettingsForm : Form
             float kx = Checked ? r.Right - f.S(4) - kn : r.X + f.S(4);
             using var knob = new SolidBrush(on ? Color.White : t.Dim);
             g.FillEllipse(knob, kx, r.Y + f.S(4), kn, kn);
+        }
+    }
+
+    /// <summary>A row with a title, a subtitle describing the current choice, and a segmented control.</summary>
+    class ChoiceRow : Control
+    {
+        readonly SettingsForm f;
+        readonly string[] options, descriptions;
+        readonly Font font;
+        readonly int indent;
+        int selected, hover = -1;
+
+        public event Action? Changed;
+        public int Selected => selected;
+
+        public ChoiceRow(SettingsForm f, string text, string[] options, int selected, string[] descriptions, Font font, int indent = 0)
+        {
+            this.f = f;
+            this.options = options;
+            this.descriptions = descriptions;
+            this.selected = selected;
+            this.font = font;
+            this.indent = indent;
+            Text = text;
+            DoubleBuffered = true;
+            Size = new Size(f.S(440), f.S(46));
+            Margin = new Padding(0, 0, 0, f.S(2));
+        }
+
+        int SegW => f.S(62);
+        Rectangle Track => new(Width - f.S(12) - SegW * options.Length, (Height - f.S(28)) / 2, SegW * options.Length, f.S(28));
+
+        int SegmentAt(Point p)
+        {
+            var r = Track;
+            return r.Contains(p) ? Math.Min(options.Length - 1, (p.X - r.X) / SegW) : -1;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            int h = SegmentAt(e.Location);
+            Cursor = h >= 0 ? Cursors.Hand : Cursors.Default;
+            if (h != hover) { hover = h; Invalidate(); }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e) { hover = -1; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            int s = SegmentAt(e.Location);
+            if (s >= 0 && s != selected)
+            {
+                selected = s;
+                Invalidate();
+                Changed?.Invoke();
+            }
+            base.OnMouseClick(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            var t = f.t;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(t.Back);
+
+            var flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+            int x = indent + f.S(10), textW = Track.X - x - f.S(8);
+            TextRenderer.DrawText(g, Text, font, new Rectangle(x, f.S(5), textW, f.S(20)), t.Text, flags);
+            TextRenderer.DrawText(g, descriptions[selected], f.small, new Rectangle(x, f.S(25), textW, f.S(18)), t.Dim, flags);
+
+            var track = Track;
+            using (var p = Theme.Rounded(track, f.S(6)))
+            using (var pen = new Pen(t.Border))
+                g.DrawPath(pen, p);
+            for (int i = 0; i < options.Length; i++)
+            {
+                var seg = new RectangleF(track.X + i * SegW + f.S(2), track.Y + f.S(2), SegW - f.S(4), track.Height - f.S(4));
+                if (i == selected || i == hover)
+                {
+                    using var p = Theme.Rounded(seg, f.S(5));
+                    using var b = new SolidBrush(i == selected ? Theme.Resin : t.Hover);
+                    g.FillPath(b, p);
+                }
+                TextRenderer.DrawText(g, options[i], f.small, Rectangle.Round(seg), i == selected ? Color.White : t.Text,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
         }
     }
 

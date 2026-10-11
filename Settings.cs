@@ -12,6 +12,14 @@ class Settings
 
     public string Icon { get; set; } = "resin";
 
+    /// <summary>Games (by key) whose HoYoLAB daily check-in is claimed automatically. Off by default.</summary>
+    public HashSet<string> AutoCheckIn { get; set; } = [];
+
+    /// <summary>Game key → "off" / "notify" / "auto" for redemption codes. Missing means "notify".</summary>
+    public Dictionary<string, string> Codes { get; set; } = [];
+
+    public string CodeMode(Game g) => Codes.GetValueOrDefault(g.Key, "notify");
+
     static string FilePath => Path.Combine(Storage.Dir, "settings.json");
 
     public static Settings Load()

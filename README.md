@@ -23,6 +23,8 @@ Hover the icon for a quick glance, or left/right-click for the full card:
 - Genshin commissions, HSR daily training and ZZZ engagement at a glance
 - Settings window to choose which games are shown, show several accounts per game,
   and pick the tray icon (Original Resin, Trailblaze Power or Battery Charge)
+- Optional daily rewards: auto-claim the HoYoLAB daily check-in, and get notified about (or auto-redeem)
+  redemption codes posted on HoYoLAB after livestreams
 - Polls HoYoLAB every 20 minutes (and after waking from sleep); counts regen locally in between,
   so numbers stay accurate to the minute without hammering the API
 - One-time login through an embedded HoYoLAB page, no copying cookies by hand
@@ -71,6 +73,24 @@ Click the tray icon → **Settings…**
 
 Settings are saved in `%LOCALAPPDATA%\HoyoTray\settings.json`.
 
+## Daily rewards
+
+Per game, in Settings → **Daily rewards**:
+
+- **Daily check-in** (off by default): claims the HoYoLAB daily check-in once a day, after the
+  daily reset (midnight UTC+8). Cards show "✓ Checked in" once it's done.
+- **Redemption codes**: HoyoTray watches the redemption-code section of each game's HoYoLAB page,
+  where livestream codes appear.
+  - *Notify* (default): a notification and a "Redeem new codes" item in the menu; click to redeem.
+  - *Auto*: redeems new codes for every shown account of that game and tells you what it redeemed.
+  - *Off*: ignores codes.
+
+If HoYoverse answers with a security check (captcha), HoyoTray doesn't try to get around it: the menu
+offers to open the official check-in or redemption page so you can finish it yourself.
+
+Only codes posted on HoYoLAB are found, mainly livestream codes; codes shared only on social media won't be.
+Rewards are only claimed while HoyoTray is running.
+
 Windows SmartScreen may warn about an unrecognised app because the exe isn't code-signed.
 The exe is built from this repo's source by GitHub Actions (see `.github/workflows/build.yml`),
 so you can check exactly what went into it, or build it yourself.
@@ -100,7 +120,9 @@ The exe ends up in `publish\HoyoTray.exe`.
 
 - Uses HoYoLAB's **unofficial, undocumented** API (the same one community tools like genshin.py
   use). HoYoverse can change it at any time, which may break the app until it's updated.
-- Read-only: it never changes anything on your account and doesn't touch the game client.
+- Read-only by default: it doesn't change anything on your account and never touches the game client.
+  The optional daily check-in and code redemption are automated actions on your account (the same requests
+  the official web pages send); they're off / notify-only unless you enable them.
 - Global (HoYoLAB) servers only, not China (miyoushe) servers.
 
 ## Disclaimer

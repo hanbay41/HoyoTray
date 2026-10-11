@@ -1,4 +1,4 @@
-using System.Drawing.Drawing2D;
+﻿using System.Drawing.Drawing2D;
 
 namespace HoyoTray;
 
@@ -13,6 +13,9 @@ class MenuStyle
     public readonly Font Value = new("Segoe UI Semibold", 13f);
     public readonly Font Glyph = MakeGlyphFont();
     public int Width => S(290);
+
+    /// <summary>Gift box exists only in Windows 11's Segoe Fluent Icons; Windows 10 falls back to a tag.</summary>
+    public string GiftGlyph => Glyph.Name == "Segoe Fluent Icons" ? "\uF133" : "\uE8EC";
 
     public int S(float px) => (int)Math.Round(px * Scale);
 
@@ -74,6 +77,9 @@ class StatItem(MenuStyle st) : ToolStripItem
     public Color Accent;
     public bool SideDone;
     public string? Warning;
+    /// <summary>Small status shown left of the account name, e.g. "✓ Checked in".</summary>
+    public string? Badge;
+    public Color BadgeColor;
 
     public override bool CanSelect => false;
 
@@ -92,6 +98,17 @@ class StatItem(MenuStyle st) : ToolStripItem
             g.FillEllipse(dot, pad, y + st.S(5), st.S(8), st.S(8));
         MenuStyle.Text(g, Game, st.Title, t.Text, new Rectangle(pad + st.S(14), y, w, st.S(20)));
         MenuStyle.Text(g, Account, st.Small, t.Dim, new Rectangle(pad, y + st.S(2), w, st.S(18)), TextFormatFlags.Right);
+        if (!string.IsNullOrEmpty(Badge))
+        {
+            // Right-aligned in the space left of the account name: "✓ Checked in  ·  Traveler".
+            // Skipped if it would run into the game name.
+            int accW = MenuStyle.Measure(Account, st.Small).Width;
+            int badgeW = MenuStyle.Measure(Badge + "  ·  ", st.Small).Width;
+            int titleRight = pad + st.S(14) + MenuStyle.Measure(Game, st.Title).Width + st.S(8);
+            if (pad + w - accW - badgeW >= titleRight)
+                MenuStyle.Text(g, Badge + "  ·  ", st.Small, BadgeColor,
+                    new Rectangle(pad, y + st.S(2), w - accW, st.S(18)), TextFormatFlags.Right);
+        }
         y += st.S(24);
 
         // Label left, "142 / 200" right ("—" while there's no data yet)
@@ -194,7 +211,8 @@ class ActionItem : ToolStripButton
         }
 
         MenuStyle.Text(g, glyph, st.Glyph, t.Text, new Rectangle(st.S(14), 0, st.S(20), Height), TextFormatFlags.VerticalCenter);
-        MenuStyle.Text(g, Text ?? "", st.Body, t.Text, new Rectangle(st.S(44), 0, Width - st.S(100), Height), TextFormatFlags.VerticalCenter);
+        int textW = Width - st.S(Toggle == null ? 56 : 100); // leave room for the switch only if there is one
+        MenuStyle.Text(g, Text ?? "", st.Body, t.Text, new Rectangle(st.S(44), 0, textW, Height), TextFormatFlags.VerticalCenter);
 
         if (Toggle is bool on)
         {
