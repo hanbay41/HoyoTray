@@ -1,0 +1,35 @@
+# Builds HoyoTray.exe on GitHub's servers.
+# - Publishing a release attaches the exe to that release.
+# - "Run workflow" on the Actions tab builds it as a downloadable artifact.
+name: Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - run: dotnet publish -c Release -o publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HoyoTray
+          path: publish/HoyoTray.exe
+
+      - name: Attach exe to release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" publish/HoyoTray.exe --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
