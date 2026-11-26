@@ -43,7 +43,7 @@ winget install hoyotray
 ```
 
 > [!NOTE]
-> The winget package is awaiting approval ([pull request](https://github.com/microsoft/winget-pkgs/pull/450805)).
+> The winget package is awaiting approval ([pull request](https://github.com/microsoft/winget-pkgs/pull/490390)).
 > Until it's merged, use the manual download below.
 
 winget installs the .NET 8 Desktop Runtime for you if it's missing. Start the app by typing `hoyotray`
